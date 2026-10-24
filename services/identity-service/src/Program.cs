@@ -1,8 +1,10 @@
 using System.Text;
+using System.Threading.RateLimiting;
 using IdentityService.Data;
 using IdentityService.Models;
 using IdentityService.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
@@ -22,6 +24,22 @@ var connectionString =
     $"Password={Environment.GetEnvironmentVariable("DB_PASSWORD")}";
 
 builder.Services.AddDbContext<AppDbContext>(options => options.UseNpgsql(connectionString));
+
+// ---------- Cấu hình tài khoản / email ----------
+var accountSettings = AccountSettings.FromEnvironment();
+builder.Services.AddSingleton(accountSettings);
+builder.Services.AddSingleton(SmtpSettings.FromEnvironment());
+builder.Services.AddSingleton<IEmailService, SmtpEmailService>();
+builder.Services.AddSingleton<IAccountEmailService, AccountEmailService>();
+
+// Lưu khóa Data Protection vào DB: token xác thực email / đặt lại mật khẩu không bị mất khi restart container
+builder.Services.AddDataProtection()
+    .SetApplicationName("identity-service")
+    .PersistKeysToDbContext<AppDbContext>();
+
+// Thời gian sống của token xác thực email / đặt lại mật khẩu
+builder.Services.Configure<DataProtectionTokenProviderOptions>(o =>
+    o.TokenLifespan = TimeSpan.FromHours(accountSettings.TokenLifespanHours));
 
 // ---------- Identity ----------
 builder.Services
@@ -68,6 +86,22 @@ builder.Services
     });
 
 builder.Services.AddAuthorization();
+
+// ---------- Rate limit cho các endpoint gửi email (chống spam/email bombing) ----------
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddPolicy("email-send", httpContext =>
+        RateLimitPartition.GetFixedWindowLimiter(
+            httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+            _ => new FixedWindowRateLimiterOptions
+            {
+                PermitLimit = 10,
+                Window = TimeSpan.FromMinutes(15),
+                QueueLimit = 0
+            }));
+});
+
 builder.Services.AddControllers();
 builder.Services.AddOpenApi();
 
@@ -96,6 +130,7 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
+app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 

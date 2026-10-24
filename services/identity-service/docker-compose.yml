@@ -17,6 +17,16 @@ services:
       timeout: 5s
       retries: 10
 
+  # Server SMTP giả lập cho môi trường dev: bắt mọi email gửi ra, xem tại http://localhost:8025
+  # Khi lên production: xóa service này và trỏ SMTP_HOST/SMTP_PORT sang SMTP thật.
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: identity-mailpit
+    restart: unless-stopped
+    ports:
+      - "8025:8025"   # giao diện web xem email
+      - "1025:1025"   # cổng SMTP (để chạy dotnet run ngoài docker vẫn gửi được)
+
   identity-service:
     build:
       context: ./src
@@ -26,6 +36,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      mailpit:
+        condition: service_started
     environment:
       ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Development}
       # Trong mạng docker, host của DB là tên service "postgres", port nội bộ luôn là 5432
@@ -46,6 +58,17 @@ services:
       TOKEN_CLEANUP_ENABLED: ${TOKEN_CLEANUP_ENABLED:-true}
       TOKEN_CLEANUP_INTERVAL_HOURS: ${TOKEN_CLEANUP_INTERVAL_HOURS:-6}
       TOKEN_CLEANUP_RETENTION_DAYS: ${TOKEN_CLEANUP_RETENTION_DAYS:-7}
+      # Email: mặc định gửi vào Mailpit. Muốn dùng SMTP thật thì sửa 2 dòng SMTP_HOST/SMTP_PORT bên dưới.
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-no-reply@identity-service.local}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Identity Service}
+      API_PUBLIC_URL: ${API_PUBLIC_URL:-http://localhost:5137}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      REQUIRE_CONFIRMED_EMAIL: ${REQUIRE_CONFIRMED_EMAIL:-true}
+      EMAIL_TOKEN_LIFESPAN_HOURS: ${EMAIL_TOKEN_LIFESPAN_HOURS:-2}
       AUTO_MIGRATE: ${AUTO_MIGRATE:-true}
     ports:
       - "5137:8080"

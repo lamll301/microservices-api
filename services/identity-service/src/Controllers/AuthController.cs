@@ -1,3 +1,4 @@
+using System.Net;
 using System.Security.Claims;
 using IdentityService.Data;
 using IdentityService.DTOs;
@@ -7,6 +8,7 @@ using IdentityService.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 
 namespace IdentityService.Controllers;
@@ -15,23 +17,40 @@ namespace IdentityService.Controllers;
 [Route("api/auth")]
 public class AuthController : ControllerBase
 {
+    private const string GenericEmailMessage =
+        "Nếu email tồn tại trong hệ thống, chúng tôi đã gửi hướng dẫn tới hộp thư của bạn.";
+    private const string InvalidResetMessage =
+        "Liên kết đặt lại mật khẩu không hợp lệ hoặc đã hết hạn.";
+
     private readonly UserManager<ApplicationUser> _userManager;
     private readonly SignInManager<ApplicationUser> _signInManager;
     private readonly ITokenService _tokenService;
+    private readonly IAccountEmailService _accountEmail;
+    private readonly AccountSettings _accountSettings;
     private readonly AppDbContext _db;
+    private readonly ILogger<AuthController> _logger;
 
     public AuthController(
         UserManager<ApplicationUser> userManager,
         SignInManager<ApplicationUser> signInManager,
         ITokenService tokenService,
-        AppDbContext db)
+        IAccountEmailService accountEmail,
+        AccountSettings accountSettings,
+        AppDbContext db,
+        ILogger<AuthController> logger)
     {
         _userManager = userManager;
         _signInManager = signInManager;
         _tokenService = tokenService;
+        _accountEmail = accountEmail;
+        _accountSettings = accountSettings;
         _db = db;
+        _logger = logger;
     }
 
+    // ================= Đăng ký / đăng nhập =================
+
+    [EnableRateLimiting("email-send")]
     [HttpPost("register")]
     public async Task<IActionResult> Register([FromBody] RegisterRequest request)
     {
@@ -54,12 +73,18 @@ public class AuthController : ControllerBase
         // Role mặc định cho user mới (role được seed khi service khởi động)
         await _userManager.AddToRoleAsync(user, AppRoles.User);
 
-        return CreatedAtAction(nameof(Me), new { }, new UserInfo
+        await SendConfirmationEmailSafeAsync(user);
+
+        return CreatedAtAction(nameof(Me), new { }, new
         {
-            Id = user.Id,
-            Email = user.Email!,
-            FullName = user.FullName,
-            Roles = await _userManager.GetRolesAsync(user)
+            message = "Đăng ký thành công. Vui lòng kiểm tra email để xác thực tài khoản.",
+            user = new UserInfo
+            {
+                Id = user.Id,
+                Email = user.Email!,
+                FullName = user.FullName,
+                Roles = await _userManager.GetRolesAsync(user)
+            }
         });
     }
 
@@ -77,8 +102,130 @@ public class AuthController : ControllerBase
         if (!check.Succeeded)
             return Unauthorized(new { message = "Email hoặc mật khẩu không đúng." });
 
+        // Chỉ báo "chưa xác thực" SAU khi mật khẩu đúng, tránh lộ thông tin tài khoản cho người lạ
+        if (_accountSettings.RequireConfirmedEmail && !user.EmailConfirmed)
+        {
+            return StatusCode(StatusCodes.Status403Forbidden, new
+            {
+                code = "email_not_confirmed",
+                message = "Email chưa được xác thực. Vui lòng kiểm tra hộp thư hoặc yêu cầu gửi lại email xác thực."
+            });
+        }
+
         return Ok(await IssueTokensAsync(user));
     }
+
+    // ================= Xác thực email =================
+
+    /// <summary>Link trong email trỏ vào đây. Trả về một trang HTML đơn giản.</summary>
+    [HttpGet("confirm-email")]
+    public async Task<IActionResult> ConfirmEmail([FromQuery] Guid userId, [FromQuery] string token)
+    {
+        var user = await _userManager.FindByIdAsync(userId.ToString());
+        if (user is null || !TokenCodec.TryDecode(token, out var rawToken))
+            return HtmlPage(StatusCodes.Status400BadRequest, "Liên kết không hợp lệ",
+                "Liên kết xác thực không hợp lệ.");
+
+        if (user.EmailConfirmed)
+            return HtmlPage(StatusCodes.Status200OK, "Email đã được xác thực",
+                "Email của bạn đã được xác thực trước đó. Bạn có thể đăng nhập.");
+
+        var result = await _userManager.ConfirmEmailAsync(user, rawToken);
+        if (!result.Succeeded)
+            return HtmlPage(StatusCodes.Status400BadRequest, "Liên kết đã hết hạn",
+                "Liên kết xác thực không hợp lệ hoặc đã hết hạn. Vui lòng yêu cầu gửi lại email xác thực.");
+
+        return HtmlPage(StatusCodes.Status200OK, "Xác thực thành công",
+            "Email của bạn đã được xác thực. Bây giờ bạn có thể đăng nhập.");
+    }
+
+    [EnableRateLimiting("email-send")]
+    [HttpPost("resend-confirmation")]
+    public async Task<IActionResult> ResendConfirmation([FromBody] ResendConfirmationRequest request)
+    {
+        var user = await _userManager.FindByEmailAsync(request.Email);
+        if (user is not null && user.IsActive && !user.EmailConfirmed)
+            await SendConfirmationEmailSafeAsync(user);
+
+        // Luôn trả cùng một thông báo để không lộ email nào đã đăng ký
+        return Ok(new { message = GenericEmailMessage });
+    }
+
+    // ================= Quên / đặt lại / đổi mật khẩu =================
+
+    [EnableRateLimiting("email-send")]
+    [HttpPost("forgot-password")]
+    public async Task<IActionResult> ForgotPassword([FromBody] ForgotPasswordRequest request)
+    {
+        var user = await _userManager.FindByEmailAsync(request.Email);
+        if (user is not null && user.IsActive)
+        {
+            try
+            {
+                var token = await _userManager.GeneratePasswordResetTokenAsync(user);
+                await _accountEmail.SendPasswordResetAsync(user, token);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Gửi email đặt lại mật khẩu cho {UserId} thất bại", user.Id);
+            }
+        }
+
+        return Ok(new { message = GenericEmailMessage });
+    }
+
+    [HttpPost("reset-password")]
+    public async Task<IActionResult> ResetPassword([FromBody] ResetPasswordRequest request)
+    {
+        var user = await _userManager.FindByEmailAsync(request.Email);
+        if (user is null || !user.IsActive || !TokenCodec.TryDecode(request.Token, out var rawToken))
+            return BadRequest(new { message = InvalidResetMessage });
+
+        var result = await _userManager.ResetPasswordAsync(user, rawToken, request.NewPassword);
+        if (!result.Succeeded)
+        {
+            if (result.Errors.Any(e => e.Code == nameof(IdentityErrorDescriber.InvalidToken)))
+                return BadRequest(new { message = InvalidResetMessage });
+
+            // Lỗi do mật khẩu mới không đủ mạnh
+            return BadRequest(new { errors = result.Errors.Select(e => new { e.Code, e.Description }) });
+        }
+
+        // Người dùng đã nhận được email nên coi như đã chứng minh sở hữu hộp thư
+        if (!user.EmailConfirmed)
+        {
+            user.EmailConfirmed = true;
+            await _userManager.UpdateAsync(user);
+        }
+
+        // Mở khóa tài khoản (nếu đang bị khóa do nhập sai) và đăng xuất mọi thiết bị
+        await _userManager.SetLockoutEndDateAsync(user, null);
+        await _userManager.ResetAccessFailedCountAsync(user);
+        await RevokeAllForUserAsync(user.Id);
+
+        return Ok(new { message = "Đặt lại mật khẩu thành công. Vui lòng đăng nhập lại." });
+    }
+
+    [Authorize]
+    [HttpPost("change-password")]
+    public async Task<IActionResult> ChangePassword([FromBody] ChangePasswordRequest request)
+    {
+        var userId = GetCurrentUserId();
+        if (userId is null) return Unauthorized();
+
+        var user = await _userManager.FindByIdAsync(userId.Value.ToString());
+        if (user is null || !user.IsActive) return Unauthorized();
+
+        var result = await _userManager.ChangePasswordAsync(user, request.CurrentPassword, request.NewPassword);
+        if (!result.Succeeded)
+            return BadRequest(new { errors = result.Errors.Select(e => new { e.Code, e.Description }) });
+
+        // Đăng xuất các thiết bị khác, cấp cặp token mới cho thiết bị đang dùng
+        await RevokeAllForUserAsync(user.Id);
+        return Ok(await IssueTokensAsync(user));
+    }
+
+    // ================= Refresh token / logout / me =================
 
     /// <summary>Đổi refresh token lấy cặp access/refresh token mới (refresh token cũ bị thu hồi).</summary>
     [HttpPost("refresh")]
@@ -154,12 +301,26 @@ public class AuthController : ControllerBase
         });
     }
 
-    // ---------- helpers ----------
+    // ================= helpers =================
 
     private Guid? GetCurrentUserId()
     {
         var value = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub");
         return Guid.TryParse(value, out var id) ? id : null;
+    }
+
+    /// <summary>Gửi email xác thực; nếu SMTP lỗi thì chỉ ghi log, không làm hỏng request (user có thể bấm gửi lại).</summary>
+    private async Task SendConfirmationEmailSafeAsync(ApplicationUser user)
+    {
+        try
+        {
+            var token = await _userManager.GenerateEmailConfirmationTokenAsync(user);
+            await _accountEmail.SendConfirmationAsync(user, token);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Gửi email xác thực cho {UserId} thất bại", user.Id);
+        }
     }
 
     private async Task<AuthResponse> IssueTokensAsync(ApplicationUser user, RefreshToken? rotateFrom = null)
@@ -206,5 +367,31 @@ public class AuthController : ControllerBase
         return _db.RefreshTokens
             .Where(t => t.UserId == userId && t.RevokedAtUtc == null)
             .ExecuteUpdateAsync(s => s.SetProperty(t => t.RevokedAtUtc, now));
+    }
+
+    private ContentResult HtmlPage(int statusCode, string title, string message)
+    {
+        var t = WebUtility.HtmlEncode(title);
+        var m = WebUtility.HtmlEncode(message);
+
+        return new ContentResult
+        {
+            StatusCode = statusCode,
+            ContentType = "text/html; charset=utf-8",
+            Content = $"""
+                <!doctype html>
+                <html lang="vi">
+                <head>
+                  <meta charset="utf-8">
+                  <meta name="viewport" content="width=device-width,initial-scale=1">
+                  <title>{t}</title>
+                </head>
+                <body style="font-family:Arial,Helvetica,sans-serif;max-width:480px;margin:15vh auto;padding:0 16px;text-align:center;color:#222">
+                  <h2>{t}</h2>
+                  <p>{m}</p>
+                </body>
+                </html>
+                """
+        };
     }
 }

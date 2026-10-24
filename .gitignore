@@ -1,0 +1,53 @@
+docs/
+
+## Build and Output Directories
+bin/
+obj/
+out/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+## Visual Studio & VS Code User Settings
+.vscode/*
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+!.vscode/settings.json
+*.code-workspace
+.vs/
+*.user
+*.userosscache
+*.sln.docstates
+
+## Environment & Secrets (Dotnet & Node/Python configs)
+.env
+.env.*
+!.env.example
+appsettings.Secrets.json
+appsettings.Local.json
+*.Development.json
+*.local.json
+
+## Rider / JetBrains IDEs
+.idea/
+*.sln.iml
+
+## Test & Coverage Results
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+*.visualstudio.g.cs
+*.suo
+*.user
+*.sln.docstates
+
+## Dependency Directories & Packages
+packages/
+*.nuget.props
+*.nuget.targets
+
+## OS Generated Files
+.DS_Store
+Thumbs.db
+desktop.ini

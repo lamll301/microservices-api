@@ -1,0 +1,54 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: identity-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    ports:
+      - "${DB_PORT:-5432}:5432"   # mở ra host để bạn dùng DBeaver/pgAdmin; xóa dòng này nếu không cần
+    volumes:
+      - identity_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  identity-service:
+    build:
+      context: ./src
+      dockerfile: Dockerfile
+    container_name: identity-service
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: ${ASPNETCORE_ENVIRONMENT:-Development}
+      # Trong mạng docker, host của DB là tên service "postgres", port nội bộ luôn là 5432
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_ISSUER: ${JWT_ISSUER:-identity-service}
+      JWT_AUDIENCE: ${JWT_AUDIENCE:-microservices-api}
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-60}
+      JWT_REFRESH_EXPIRE_DAYS: ${JWT_REFRESH_EXPIRE_DAYS:-7}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      ADMIN_FULLNAME: ${ADMIN_FULLNAME:-Administrator}
+      SEED_DATA: ${SEED_DATA:-true}
+      TOKEN_CLEANUP_ENABLED: ${TOKEN_CLEANUP_ENABLED:-true}
+      TOKEN_CLEANUP_INTERVAL_HOURS: ${TOKEN_CLEANUP_INTERVAL_HOURS:-6}
+      TOKEN_CLEANUP_RETENTION_DAYS: ${TOKEN_CLEANUP_RETENTION_DAYS:-7}
+      AUTO_MIGRATE: ${AUTO_MIGRATE:-true}
+    ports:
+      - "5137:8080"
+
+volumes:
+  identity_pgdata:

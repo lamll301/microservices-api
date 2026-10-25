@@ -1,6 +1,10 @@
 using System.Text;
 using System.Threading.RateLimiting;
+using BuildingBlocks.Authorization;
+using BuildingBlocks.Events;
 using IdentityService.Data;
+using IdentityService.Events;
+using IdentityService.Filters;
 using IdentityService.Models;
 using IdentityService.Services;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -64,7 +68,7 @@ builder.Services
         options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15);
         options.Lockout.AllowedForNewUsers = true;
     })
-    .AddRoles<IdentityRole<Guid>>()
+    .AddRoles<ApplicationRole>()
     .AddEntityFrameworkStores<AppDbContext>()
     .AddSignInManager()
     .AddDefaultTokenProviders();
@@ -93,7 +97,19 @@ builder.Services
         };
     });
 
-builder.Services.AddAuthorization();
+// ---------- Phân quyền theo Level: user được phép khi Level của user >= Level của permission ----------
+// Level của permission nằm trong DB; cache trong bộ nhớ (TTL ngắn) và phát event khi thay đổi.
+builder.Services.AddMemoryCache();
+builder.Services.AddScoped<IAccessLevelService, AccessLevelService>();
+builder.Services.AddSingleton<IEventPublisher, LoggingEventPublisher>(); // thay bằng adapter broker thật khi đã chọn broker
+builder.Services.AddSingleton<PermissionService>();
+builder.Services.AddSingleton<IPermissionService>(sp => sp.GetRequiredService<PermissionService>());
+builder.Services.AddSingleton<IPermissionLevelProvider>(sp => sp.GetRequiredService<PermissionService>());
+builder.Services.AddPermissionAuthorization(); // AddAuthorization + handler + policy provider dùng chung (building-blocks)
+
+// Endpoint nội bộ cho service khác (chỉ bật khi INTERNAL_API_KEY >= 32 ký tự)
+builder.Services.AddSingleton(InternalApiSettings.FromEnvironment());
+builder.Services.AddSingleton<InternalApiKeyFilter>();
 
 // ---------- Rate limit cho các endpoint gửi email (chống spam/email bombing) ----------
 var emailRateLimit =
@@ -128,6 +144,10 @@ if (!string.Equals(Environment.GetEnvironmentVariable("AUTO_MIGRATE"), "false", 
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     await db.Database.MigrateAsync();
 }
+
+// Đồng bộ danh mục permission từ code (chỉ thêm cái thiếu, không ghi đè Level trong DB).
+// Luôn chạy, không phụ thuộc SEED_DATA: thiếu danh mục thì mọi [HasPermission] đều bị từ chối.
+await IdentitySeeder.SyncPermissionsAsync(app.Services, app.Logger);
 
 // Seed role (Admin, User) và tài khoản admin từ ADMIN_EMAIL/ADMIN_PASSWORD. Đặt SEED_DATA=false để tắt.
 if (!string.Equals(Environment.GetEnvironmentVariable("SEED_DATA"), "false", StringComparison.OrdinalIgnoreCase))

@@ -27,16 +27,32 @@ identity-service/
     ├── Dockerfile
     ├── IdentityService.Api.csproj
     ├── Program.cs            # đăng ký DI, Identity, JWT, rate limit, migrate + seed khi khởi động
-    ├── Controllers/          # AuthController (/api/auth), AdminController (/api/admin)
+    ├── Controllers/          # AuthController (/api/auth), AdminController (/api/admin), InternalController (/api/internal)
     ├── Data/                 # AppDbContext, IdentitySeeder
     ├── DTOs/                 # request/response (RegisterRequest, LoginRequest, AuthResponse, ...)
-    ├── Entities/             # entity không thuộc Identity (RefreshToken)
-    ├── Models/               # ApplicationUser, AppRoles
+    ├── Entities/             # entity không thuộc Identity (RefreshToken, Permission, Department)
+    ├── Events/               # LoggingEventPublisher (hợp đồng IEventPublisher nằm ở building-blocks)
+    ├── Filters/              # InternalApiKeyFilter (bảo vệ endpoint nội bộ bằng X-Internal-Key)
+    ├── Models/               # ApplicationUser, ApplicationRole, AppRoles, AccessLevels, AppPermissions
     ├── Middleware/           # ExceptionHandlingMiddleware
     ├── Repositories/         # (dự phòng)
     └── Services/             # TokenService, JwtSettings, EmailService, AccountEmailService,
-                              # AccountSettings, TokenCodec, RefreshTokenCleanupService
+                              # AccountSettings, TokenCodec, RefreshTokenCleanupService,
+                              # PermissionService, PermissionSnapshot, AccessLevelService, InternalApiSettings
 ```
+
+Cấu trúc repo (đường dẫn tương đối từ gốc `microservices-api/`):
+
+```
+building-blocks/                      # code dùng chung, xem building-blocks/README.md
+├── BuildingBlocks.Authorization/     # [HasPermission], PermissionHandler, PermissionPolicyProvider,
+│                                     # IPermissionLevelProvider, AuthClaimTypes, AddPermissionAuthorization()
+└── BuildingBlocks.Events/            # IEventPublisher, PermissionLevelChangedEvent
+services/
+└── identity-service/                 # (cây thư mục ở trên)
+```
+
+`IdentityService.Api.csproj` tham chiếu hai project trên bằng `ProjectReference` (`..\..\..\building-blocks\...`). Namespace dùng chung bắt đầu bằng `BuildingBlocks.*`.
 
 Namespace gốc là `IdentityService.*` (ví dụ `IdentityService.Services`, `IdentityService.DTOs`). Namespace phải khớp với thư mục.
 
@@ -54,7 +70,7 @@ dotnet ef database update                    # áp migration thủ công (mặc 
 dotnet ef migrations remove                  # bỏ migration cuối (chỉ khi chưa áp vào DB dùng chung)
 ```
 
-Chạy bằng Docker (trong thư mục `identity-service/`, ngang hàng `docker-compose.yml`):
+Chạy bằng Docker (trong thư mục `identity-service/`, ngang hàng `docker-compose.yml`). Build context của image là THƯ MỤC GỐC REPO (`../..`) để Docker thấy `building-blocks/`; `Dockerfile` phải `COPY` cả `building-blocks/` lẫn `services/identity-service/src/`:
 
 ```bash
 docker compose up -d --build                 # dựng và chạy toàn bộ
@@ -77,6 +93,7 @@ Danh sách đầy đủ và giá trị mẫu nằm trong `.env.example`. Nhóm c
 - `JWT_SECRET` (bắt buộc, tối thiểu 32 ký tự), `JWT_ISSUER`, `JWT_AUDIENCE`, `JWT_EXPIRE_MINUTES`, `JWT_REFRESH_EXPIRE_DAYS`
 - `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_FULLNAME`, `SEED_DATA`
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_FROM_NAME`
+- `INTERNAL_API_KEY` (tối thiểu 32 ký tự; bật endpoint `/api/internal/*` cho service khác, để trống thì endpoint tắt)
 - `API_PUBLIC_URL`, `FRONTEND_URL`, `REQUIRE_CONFIRMED_EMAIL`, `EMAIL_TOKEN_LIFESPAN_HOURS`, `EMAIL_RATE_LIMIT_PERMITS`
 - `TOKEN_CLEANUP_ENABLED`, `TOKEN_CLEANUP_INTERVAL_HOURS`, `TOKEN_CLEANUP_RETENTION_DAYS`
 - `AUTO_MIGRATE`, `ASPNETCORE_ENVIRONMENT`
@@ -124,11 +141,31 @@ Lưu ý: thư mục `src/Migrations/` phải được commit, vì CI không có 
 - `GET confirm-email`, `POST resend-confirmation`
 - `POST forgot-password`, `POST reset-password`, `POST change-password` (cần Bearer)
 
-`/api/admin` (yêu cầu role `Admin`):
-- `GET users`, `GET roles`
-- `POST users/{id}/roles`, `DELETE users/{id}/roles/{role}`
+`/api/admin` (kiểm tra bằng `[HasPermission]`, xem mục Phân quyền theo Level):
+- `GET users` (`identity.users.read`), `GET roles` (`identity.roles.read`)
+- `POST users/{id}/roles`, `DELETE users/{id}/roles/{role}` (`identity.roles.assign`)
+- `GET permissions` (`identity.permissions.read`), `PUT permissions/{code}/level` (`identity.permissions.manage`)
 
-Role hiện có: `Admin`, `User` (hằng số trong `Models/AppRoles.cs`). User đăng ký mới tự có role `User`.
+`/api/internal` (service-to-service, header `X-Internal-Key` = `INTERNAL_API_KEY`, không đưa ra gateway công khai):
+- `GET permissions`: snapshot `{ version, items }` để service khác nạp cache.
+
+Role hiện có (hằng số + Level mặc định trong `Models/AppRoles.cs`, `Models/AccessLevels.cs`): `SuperAdmin` 9999, `Admin` 9998, `Manager` 899, `User` 100. User đăng ký mới tự có role `User`.
+
+## Phân quyền theo Level
+
+- Mỗi role có `Level` (cột trong `AspNetRoles`); Level của user = Level cao nhất trong các role. Token chứa một claim `level`.
+- Mỗi permission (bảng `Permissions`, tên `{service}.{resource}.{action}`) có `Level` tối thiểu. User được phép khi `level` của user >= `Level` của permission. Thiếu claim / claim sai / permission chưa khai báo thì từ chối.
+- Controller dùng `[HasPermission(AppPermissions.Identity.X)]`, không dùng `[Authorize(Roles = ...)]`. Thêm permission mới: khai báo trong `AppPermissions.Definitions`; seeder tự thêm vào DB. Seeder KHÔNG ghi đè Level đã có trong DB; Level sửa lúc chạy qua `PUT /api/admin/permissions/{code}/level`.
+- Cache + event: `PermissionService` cache snapshot trong bộ nhớ (TTL 60 giây) và xóa cache khi Level đổi, đồng thời phát `PermissionLevelChangedEvent` qua `IEventPublisher`. Event chỉ là tín hiệu làm mới cache; consumer phải tải lại snapshot (so sánh `version`) và vẫn làm mới theo TTL phòng mất event. Hiện `IEventPublisher` mới chỉ ghi log, chưa nối broker.
+- Chống leo thang đặc quyền: chỉ được gán/gỡ role và thao tác trên user có Level THẤP HƠN HẲN cấp của mình; không tự gỡ role của mình; chỉ được đổi Level của permission đang thấp hơn cấp của mình và không đặt cao hơn cấp của mình. Vì vậy `SuperAdmin` không thể gán/gỡ qua API (chỉ qua DB). Level của người thao tác được đọc từ DB, không tin claim.
+- Bảng `Departments` đã tạo nhưng chưa gắn với user/permission.
+
+### building-blocks (đã tách)
+
+- Dùng chung (ở `building-blocks/`): `[HasPermission]`, `PermissionHandler`, `PermissionPolicyProvider`, `IPermissionLevelProvider`, `AuthClaimTypes`, `AddPermissionAuthorization()`, `IEventPublisher`, `PermissionLevelChangedEvent`.
+- Ở lại identity-service vì phụ thuộc DB/cấu hình riêng: `PermissionService` (cài đặt `IPermissionLevelProvider` bằng DB + cache), `LoggingEventPublisher`, `InternalApiKeyFilter`, `InternalApiSettings`.
+- Không đặt logic nghiệp vụ, DbContext hay cấu hình riêng của một service vào `building-blocks/`. Đổi tên/chữ ký trong đó phải cập nhật mọi service cùng lúc.
+- Service mới cần kiểm tra permission: tham chiếu `BuildingBlocks.Authorization`, gọi `AddPermissionAuthorization()`, tự đăng ký một `IPermissionLevelProvider` (cache snapshot TTL ngắn lấy từ `GET /api/internal/permissions` bằng `X-Internal-Key`, làm mới khi nhận `PermissionLevelChangedEvent` bằng cách so sánh `version`) và dùng chung `JWT_SECRET`, `JWT_ISSUER`, `JWT_AUDIENCE`.
 
 ## Quy ước code
 
@@ -156,7 +193,11 @@ Role hiện có: `Admin`, `User` (hằng số trong `Models/AppRoles.cs`). User 
 
 - `.env` được nạp bằng `NoClobber()`: biến môi trường thật luôn thắng giá trị trong `.env`. Project test dựa vào điều này để ghi đè cấu hình.
 - Khóa Data Protection được lưu trong DB (bảng `DataProtectionKeys`) để token email không mất khi restart container; không bỏ cấu hình này khi chạy nhiều instance.
-- Role nằm trong access token, nên đổi role chỉ có hiệu lực sau khi access token hết hạn hoặc sau khi gọi `/refresh`.
+- Role và `level` nằm trong access token, nên đổi role hoặc Level của role chỉ có hiệu lực sau khi access token hết hạn hoặc sau khi gọi `/refresh`. Đổi Level của permission thì có hiệu lực ngay (sau khi cache làm mới) vì Level permission không nằm trong token.
+- `IEventPublisher` hiện là `LoggingEventPublisher` (chỉ ghi log), chưa nối message broker. Chọn broker xong thì thay bản đăng ký trong `Program.cs`; nhớ cân nhắc outbox nếu cần đảm bảo không mất event.
+- Thay đổi trong `building-blocks/` kích hoạt CI của mọi service tham chiếu nó (workflow đã theo dõi `building-blocks/**`).
+- Chạy nhiều instance identity-service: cache permission của instance khác chỉ làm mới theo TTL 60 giây (event chỉ báo cho service khác).
+- `SEED_DATA=false` tắt seed role/admin: khi đó phải tự bảo đảm `AspNetRoles.Level` đã có giá trị, nếu không mọi user có Level 0 và bị từ chối.
 - `REQUIRE_CONFIRMED_EMAIL=true` khiến user cũ có `EmailConfirmed = false` không đăng nhập được. Khi dev có thể chạy `UPDATE "AspNetUsers" SET "EmailConfirmed" = TRUE;`.
 - Dòng `app.UseMiddleware<ExceptionHandlingMiddleware>();` trong `Program.cs` được comment sẵn vì không biết namespace thật của middleware; bỏ comment và thêm `using` đúng.
 - `Program.cs` gọi `AddOpenApi()`; cần package `Microsoft.AspNetCore.OpenApi` (có sẵn trong template webapi).

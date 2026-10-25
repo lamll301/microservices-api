@@ -1,7 +1,9 @@
+using System.Globalization;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
+using BuildingBlocks.Authorization;
 using IdentityService.Models;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.IdentityModel.Tokens;
@@ -10,7 +12,8 @@ namespace IdentityService.Services;
 
 public interface ITokenService
 {
-    (string Token, DateTime ExpiresAtUtc) CreateAccessToken(ApplicationUser user, IList<string> roles);
+    /// <summary>level: Level cao nhất trong các role của user, ghi vào claim "level" để kiểm tra permission.</summary>
+    (string Token, DateTime ExpiresAtUtc) CreateAccessToken(ApplicationUser user, IList<string> roles, int level = 0);
 
     /// <summary>Tạo refresh token ngẫu nhiên. RawToken trả cho client, TokenHash lưu vào DB.</summary>
     (string RawToken, string TokenHash, DateTime ExpiresAtUtc) CreateRefreshToken();
@@ -27,14 +30,15 @@ public class TokenService : ITokenService
         _settings = settings;
     }
 
-    public (string Token, DateTime ExpiresAtUtc) CreateAccessToken(ApplicationUser user, IList<string> roles)
+    public (string Token, DateTime ExpiresAtUtc) CreateAccessToken(ApplicationUser user, IList<string> roles, int level = 0)
     {
         var claims = new List<Claim>
         {
             new(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
             new(JwtRegisteredClaimNames.Email, user.Email ?? string.Empty),
             new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
-            new("name", user.FullName ?? user.UserName ?? string.Empty)
+            new("name", user.FullName ?? user.UserName ?? string.Empty),
+            new(AuthClaimTypes.Level, level.ToString(CultureInfo.InvariantCulture))
         };
         claims.AddRange(roles.Select(r => new Claim(ClaimTypes.Role, r)));
 

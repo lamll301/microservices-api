@@ -1,4 +1,8 @@
 <Solution>
+  <Folder Name="/building-blocks/">
+    <Project Path="building-blocks/BuildingBlocks.Authorization/BuildingBlocks.Authorization.csproj" />
+    <Project Path="building-blocks/BuildingBlocks.Events/BuildingBlocks.Events.csproj" />
+  </Folder>
   <Folder Name="/services/">
     <Project Path="services/identity-service/src/IdentityService.Api.csproj" />
     <Project Path="services/user-service/src/UserService.Api.csproj" />

@@ -29,8 +29,8 @@ services:
 
   identity-service:
     build:
-      context: ./src
-      dockerfile: Dockerfile
+      context: ../..   # thư mục gốc repo, để Docker thấy cả building-blocks/
+      dockerfile: services/identity-service/src/Dockerfile
     container_name: identity-service
     restart: unless-stopped
     depends_on:
@@ -51,6 +51,7 @@ services:
       JWT_AUDIENCE: ${JWT_AUDIENCE:-microservices-api}
       JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-60}
       JWT_REFRESH_EXPIRE_DAYS: ${JWT_REFRESH_EXPIRE_DAYS:-7}
+      INTERNAL_API_KEY: ${INTERNAL_API_KEY:-}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       ADMIN_FULLNAME: ${ADMIN_FULLNAME:-Administrator}

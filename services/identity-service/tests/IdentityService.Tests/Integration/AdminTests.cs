@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.IdentityModel.Tokens.Jwt;
 using IdentityService.Tests.Infrastructure;
 
 namespace IdentityService.Tests.Integration;
@@ -86,28 +87,28 @@ public class AdminTests
     // ---------- gán / gỡ role ----------
 
     [Fact]
-    public async Task Admin_can_assign_and_remove_a_role()
+    public async Task Admin_can_assign_and_remove_a_lower_level_role()
     {
         var admin = await AdminClientAsync();
         var user = await _factory.CreateUserAsync();
         var rolesUrl = $"/api/admin/users/{user.Id}/roles";
 
-        var assign = await admin.PostAsJsonAsync(rolesUrl, new { role = "Admin" });
+        var assign = await admin.PostAsJsonAsync(rolesUrl, new { role = "Manager" });
         await assign.ShouldBeAsync(HttpStatusCode.OK);
-        Assert.Contains("Admin", await ReadRolesAsync(assign));
+        Assert.Contains("Manager", await ReadRolesAsync(assign));
 
         // Gán lần nữa -> trùng
-        await (await admin.PostAsJsonAsync(rolesUrl, new { role = "Admin" })).ShouldBeAsync(HttpStatusCode.Conflict);
+        await (await admin.PostAsJsonAsync(rolesUrl, new { role = "Manager" })).ShouldBeAsync(HttpStatusCode.Conflict);
 
         // Role không tồn tại
         await (await admin.PostAsJsonAsync(rolesUrl, new { role = "Wizard" })).ShouldBeAsync(HttpStatusCode.BadRequest);
 
-        var remove = await admin.DeleteAsync($"{rolesUrl}/Admin");
+        var remove = await admin.DeleteAsync($"{rolesUrl}/Manager");
         await remove.ShouldBeAsync(HttpStatusCode.OK);
-        Assert.DoesNotContain("Admin", await ReadRolesAsync(remove));
+        Assert.DoesNotContain("Manager", await ReadRolesAsync(remove));
 
         // Gỡ lần nữa -> không còn role đó
-        await (await admin.DeleteAsync($"{rolesUrl}/Admin")).ShouldBeAsync(HttpStatusCode.NotFound);
+        await (await admin.DeleteAsync($"{rolesUrl}/Manager")).ShouldBeAsync(HttpStatusCode.NotFound);
     }
 
     [Fact]
@@ -138,16 +139,17 @@ public class AdminTests
         var user = await _factory.CreateUserAsync();
         var session = await _client.LoginOkAsync(user.Email);
 
-        await (await admin.PostAsJsonAsync($"/api/admin/users/{user.Id}/roles", new { role = "Admin" }))
+        await (await admin.PostAsJsonAsync($"/api/admin/users/{user.Id}/roles", new { role = "Manager" }))
             .ShouldBeAsync(HttpStatusCode.OK);
 
-        // Role nằm trong access token -> token cũ vẫn chưa có quyền Admin
-        await (await _factory.CreateAuthedClient(session.AccessToken).GetAsync("/api/admin/roles"))
-            .ShouldBeAsync(HttpStatusCode.Forbidden);
+        // Role và level nằm trong access token -> token cũ vẫn mang level của role User
+        Assert.Equal(100, LevelOf(session.AccessToken));
 
-        // Làm mới token -> token mới mang role Admin
+        // Làm mới token -> token mới mang level của Manager
         var refreshed = await (await _client.RefreshAsync(session.RefreshToken)).ReadAsAsync<IdentityService.DTOs.AuthResponse>();
-        await (await _factory.CreateAuthedClient(refreshed.AccessToken).GetAsync("/api/admin/roles"))
-            .ShouldBeAsync(HttpStatusCode.OK);
+        Assert.Equal(899, LevelOf(refreshed.AccessToken));
     }
+
+    private static int LevelOf(string accessToken) =>
+        int.Parse(new JwtSecurityTokenHandler().ReadJwtToken(accessToken).Claims.First(c => c.Type == "level").Value);
 }

@@ -22,6 +22,7 @@ public class IdentityApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
     public const string AdminPassword = "Admin@12345";
     public const string DefaultPassword = "Passw0rd123";
     public const string FrontendUrl = "http://localhost:3000";
+    public const string InternalApiKey = "integration-test-internal-key-at-least-32-chars!!";
 
     private readonly PostgreSqlContainer _postgres = new PostgreSqlBuilder()
         .WithImage("postgres:16-alpine")
@@ -44,6 +45,7 @@ public class IdentityApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
             ["JWT_AUDIENCE"] = "microservices-api-tests",
             ["JWT_EXPIRE_MINUTES"] = "60",
             ["JWT_REFRESH_EXPIRE_DAYS"] = "7",
+            ["INTERNAL_API_KEY"] = InternalApiKey,
             ["ADMIN_EMAIL"] = AdminEmail,
             ["ADMIN_PASSWORD"] = AdminPassword,
             ["SEED_DATA"] = "true",
@@ -80,7 +82,7 @@ public class IdentityApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
     public static string NewEmail() => $"user-{Guid.NewGuid():N}@test.local";
 
     /// <summary>Tạo user thẳng qua UserManager (nhanh, không gửi email). Mặc định đã xác thực email và có role User.</summary>
-    public async Task<TestUser> CreateUserAsync(bool emailConfirmed = true, string password = DefaultPassword)
+    public async Task<TestUser> CreateUserAsync(bool emailConfirmed = true, string password = DefaultPassword, string role = AppRoles.User)
     {
         var email = NewEmail();
 
@@ -98,7 +100,7 @@ public class IdentityApiFactory : WebApplicationFactory<Program>, IAsyncLifetime
 
         var created = await users.CreateAsync(user, password);
         Assert.True(created.Succeeded, string.Join("; ", created.Errors.Select(e => e.Description)));
-        await users.AddToRoleAsync(user, AppRoles.User);
+        await users.AddToRoleAsync(user, role);
 
         return new TestUser(user.Id, email, password);
     }

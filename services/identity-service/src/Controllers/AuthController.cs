@@ -25,6 +25,7 @@ public class AuthController : ControllerBase
     private readonly UserManager<ApplicationUser> _userManager;
     private readonly SignInManager<ApplicationUser> _signInManager;
     private readonly ITokenService _tokenService;
+    private readonly IAccessLevelService _accessLevels;
     private readonly IAccountEmailService _accountEmail;
     private readonly AccountSettings _accountSettings;
     private readonly AppDbContext _db;
@@ -34,6 +35,7 @@ public class AuthController : ControllerBase
         UserManager<ApplicationUser> userManager,
         SignInManager<ApplicationUser> signInManager,
         ITokenService tokenService,
+        IAccessLevelService accessLevels,
         IAccountEmailService accountEmail,
         AccountSettings accountSettings,
         AppDbContext db,
@@ -42,6 +44,7 @@ public class AuthController : ControllerBase
         _userManager = userManager;
         _signInManager = signInManager;
         _tokenService = tokenService;
+        _accessLevels = accessLevels;
         _accountEmail = accountEmail;
         _accountSettings = accountSettings;
         _db = db;
@@ -330,7 +333,8 @@ public class AuthController : ControllerBase
     private async Task<AuthResponse> IssueTokensAsync(ApplicationUser user, RefreshToken? rotateFrom = null)
     {
         var roles = await _userManager.GetRolesAsync(user);
-        var (accessToken, accessExpires) = _tokenService.CreateAccessToken(user, roles);
+        var level = await _accessLevels.GetLevelAsync(roles);
+        var (accessToken, accessExpires) = _tokenService.CreateAccessToken(user, roles, level);
         var (rawRefresh, refreshHash, refreshExpires) = _tokenService.CreateRefreshToken();
 
         _db.RefreshTokens.Add(new RefreshToken

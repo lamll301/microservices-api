@@ -10,7 +10,15 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 
 // Đọc .env (tự tìm ngược lên các thư mục cha). Trong Docker, biến môi trường được compose truyền vào.
-DotNetEnv.Env.TraversePath().Load();
+// NoClobber: biến môi trường THẬT luôn thắng giá trị trong .env (project test dựa vào điều này để ghi đè cấu hình).
+try
+{
+    DotNetEnv.Env.NoClobber().TraversePath().Load();
+}
+catch (FileNotFoundException)
+{
+    // Không có file .env (Docker, CI): dùng biến môi trường thật.
+}
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -88,6 +96,11 @@ builder.Services
 builder.Services.AddAuthorization();
 
 // ---------- Rate limit cho các endpoint gửi email (chống spam/email bombing) ----------
+var emailRateLimit =
+    int.TryParse(Environment.GetEnvironmentVariable("EMAIL_RATE_LIMIT_PERMITS"), out var permits) && permits > 0
+        ? permits
+        : 10;
+
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -96,7 +109,7 @@ builder.Services.AddRateLimiter(options =>
             httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
             _ => new FixedWindowRateLimiterOptions
             {
-                PermitLimit = 10,
+                PermitLimit = emailRateLimit,
                 Window = TimeSpan.FromMinutes(15),
                 QueueLimit = 0
             }));
@@ -138,3 +151,6 @@ app.MapControllers();
 app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
 
 app.Run();
+
+// Cho phép project test tham chiếu tới Program (WebApplicationFactory<Program>)
+public partial class Program { }

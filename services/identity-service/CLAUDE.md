@@ -21,6 +21,8 @@ identity-service/
 ├── docker-compose.yml        # postgres + mailpit + identity-service
 ├── .env.example              # mẫu biến môi trường (commit); .env thật KHÔNG commit
 ├── CLAUDE.md
+├── tests/
+│   └── IdentityService.Tests/    # xUnit: Unit/ (không cần Docker), Integration/ (Testcontainers + Postgres thật)
 └── src/
     ├── Dockerfile
     ├── IdentityService.Api.csproj
@@ -75,13 +77,44 @@ Danh sách đầy đủ và giá trị mẫu nằm trong `.env.example`. Nhóm c
 - `JWT_SECRET` (bắt buộc, tối thiểu 32 ký tự), `JWT_ISSUER`, `JWT_AUDIENCE`, `JWT_EXPIRE_MINUTES`, `JWT_REFRESH_EXPIRE_DAYS`
 - `ADMIN_EMAIL`, `ADMIN_PASSWORD`, `ADMIN_FULLNAME`, `SEED_DATA`
 - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM_EMAIL`, `SMTP_FROM_NAME`
-- `API_PUBLIC_URL`, `FRONTEND_URL`, `REQUIRE_CONFIRMED_EMAIL`, `EMAIL_TOKEN_LIFESPAN_HOURS`
+- `API_PUBLIC_URL`, `FRONTEND_URL`, `REQUIRE_CONFIRMED_EMAIL`, `EMAIL_TOKEN_LIFESPAN_HOURS`, `EMAIL_RATE_LIMIT_PERMITS`
 - `TOKEN_CLEANUP_ENABLED`, `TOKEN_CLEANUP_INTERVAL_HOURS`, `TOKEN_CLEANUP_RETENTION_DAYS`
 - `AUTO_MIGRATE`, `ASPNETCORE_ENVIRONMENT`
 
 Khi chạy bằng Docker Compose, `DB_HOST` luôn là `postgres` và `SMTP_HOST` là `mailpit` (đặt cứng trong `docker-compose.yml`); khi chạy `dotnet run` ngoài docker thì dùng `localhost`.
 
 Khi thêm biến mới: cập nhật đồng thời `.env.example`, phần `environment` của `docker-compose.yml` và class cấu hình tương ứng (`JwtSettings`, `SmtpSettings`, `AccountSettings`).
+
+## Test
+
+Project test nằm ở `tests/IdentityService.Tests/` (xUnit 2 + `Microsoft.AspNetCore.Mvc.Testing` + Testcontainers).
+
+- `Unit/`: test logic thuần (`TokenCodec`, `TokenService`), không cần Docker.
+- `Integration/`: gọi API thật qua `WebApplicationFactory<Program>` + PostgreSQL thật trong Docker. **Cần Docker đang chạy.** Các class gắn `[Trait("Category", "Integration")]` và `[Collection("Api")]` để dùng chung một container.
+- `Infrastructure/`: `IdentityApiFactory` (đặt biến môi trường rồi dựng host, thay SMTP bằng `FakeEmailService`), helper HTTP/email.
+
+```bash
+cd tests/IdentityService.Tests
+dotnet test                                      # chạy tất cả (cần Docker)
+dotnet test --filter "Category!=Integration"     # chỉ unit test, không cần Docker
+dotnet test --filter "FullyQualifiedName~PasswordTests"   # một class
+```
+
+Quy tắc khi viết test:
+- Mỗi test dùng email ngẫu nhiên (`IdentityApiFactory.NewEmail()` / `CreateUserAsync()`), không dựa vào dữ liệu của test khác và không sửa tài khoản admin được seed.
+- Dùng `CreateUserAsync()` để dựng user nhanh; chỉ đi qua `/register` khi chính luồng đăng ký là thứ cần test.
+- Đọc link xác thực/đặt lại mật khẩu từ `factory.Emails` (hộp thư giả), không gửi SMTP thật.
+- Dùng `await response.ShouldBeAsync(HttpStatusCode.X)` để khi sai sẽ in kèm body lỗi của API.
+- Thêm endpoint/luồng mới thì thêm test tương ứng; sửa lỗi thì viết test tái hiện lỗi trước.
+- `Program.cs` phải giữ `public partial class Program { }` và `DotNetEnv.Env.NoClobber()`; hai thứ này là điều kiện để test chạy.
+
+### CI (GitHub Actions)
+
+Workflow ở `.github/workflows/identity-service-ci.yml` (thư mục gốc repo). Mỗi lần push, hoặc mở/cập nhật PR vào `main`, có thay đổi trong `services/identity-service/**` hoặc `building-blocks/**` thì chạy:
+- Job `Build & Test`: restore, build Release, unit test rồi integration test (runner Ubuntu có sẵn Docker nên Testcontainers chạy được). Kết quả `.trx` được upload thành artifact `test-results`.
+- Job `Docker image build`: build thử `src/Dockerfile` để chắc chắn image vẫn dựng được.
+
+Lưu ý: thư mục `src/Migrations/` phải được commit, vì CI không có DB sẵn và test dựa vào migration để tạo bảng. Không commit `.env`. CI không cần secret nào vì test tự đặt cấu hình riêng.
 
 ## Các endpoint
 
@@ -121,6 +154,7 @@ Role hiện có: `Admin`, `User` (hằng số trong `Models/AppRoles.cs`). User 
 
 ## Lưu ý đã biết
 
+- `.env` được nạp bằng `NoClobber()`: biến môi trường thật luôn thắng giá trị trong `.env`. Project test dựa vào điều này để ghi đè cấu hình.
 - Khóa Data Protection được lưu trong DB (bảng `DataProtectionKeys`) để token email không mất khi restart container; không bỏ cấu hình này khi chạy nhiều instance.
 - Role nằm trong access token, nên đổi role chỉ có hiệu lực sau khi access token hết hạn hoặc sau khi gọi `/refresh`.
 - `REQUIRE_CONFIRMED_EMAIL=true` khiến user cũ có `EmailConfirmed = false` không đăng nhập được. Khi dev có thể chạy `UPDATE "AspNetUsers" SET "EmailConfirmed" = TRUE;`.

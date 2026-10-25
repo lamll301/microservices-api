@@ -1,0 +1,102 @@
+name: identity-service CI
+
+on:
+  push:
+    branches: ['**']
+    paths:
+      - 'services/identity-service/**'
+      - 'building-blocks/**'
+      - '.github/workflows/identity-service-ci.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'services/identity-service/**'
+      - 'building-blocks/**'
+      - '.github/workflows/identity-service-ci.yml'
+  workflow_dispatch:   # cho phép bấm chạy tay trên tab Actions
+
+# Push mới lên cùng một nhánh thì hủy lượt chạy cũ (tiết kiệm phút chạy, tránh kết quả chồng chéo).
+# Push và Pull Request của cùng một nhánh dùng chung group nên không bị chạy hai lần.
+concurrency:
+  group: identity-service-ci-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+# Nguyên tắc đặc quyền tối thiểu: workflow chỉ được đọc code
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: true
+
+jobs:
+  test:
+    name: Build & Test
+    runs-on: ubuntu-latest      # đã có sẵn Docker -> Testcontainers chạy được, không cần cấu hình thêm
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: services/identity-service
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('services/identity-service/**/*.csproj') }}
+          restore-keys: |
+            nuget-${{ runner.os }}-
+
+      - name: Restore
+        run: dotnet restore tests/IdentityService.Tests/IdentityService.Tests.csproj
+
+      - name: Build
+        run: dotnet build tests/IdentityService.Tests/IdentityService.Tests.csproj -c Release --no-restore
+
+      # Unit test chạy trước: nhanh, lỗi thì dừng sớm, khỏi mất thời gian kéo image Postgres
+      - name: Unit tests
+        run: >
+          dotnet test tests/IdentityService.Tests/IdentityService.Tests.csproj
+          -c Release --no-build
+          --filter "Category!=Integration"
+          --logger "trx;LogFileName=unit.trx"
+          --results-directory TestResults
+
+      - name: Integration tests (PostgreSQL qua Testcontainers)
+        run: >
+          dotnet test tests/IdentityService.Tests/IdentityService.Tests.csproj
+          -c Release --no-build
+          --filter "Category=Integration"
+          --logger "trx;LogFileName=integration.trx"
+          --results-directory TestResults
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: services/identity-service/TestResults
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Chạy song song với job test: đảm bảo Dockerfile vẫn build được, tránh phát hiện muộn lúc deploy
+  docker-build:
+    name: Docker image build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t identity-service:ci services/identity-service/src

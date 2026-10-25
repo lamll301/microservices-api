@@ -3,4 +3,9 @@
     <Project Path="services/identity-service/src/IdentityService.Api.csproj" />
     <Project Path="services/user-service/src/UserService.Api.csproj" />
   </Folder>
+  <Folder Name="/services/identity-service/" />
+  <Folder Name="/services/identity-service/src/" />
+  <Folder Name="/services/identity-service/tests/">
+    <Project Path="services/identity-service/tests/IdentityService.Tests/IdentityService.Tests.csproj" />
+  </Folder>
 </Solution>

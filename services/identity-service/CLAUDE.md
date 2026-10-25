@@ -145,7 +145,7 @@ Role hiện có: `Admin`, `User` (hằng số trong `Models/AppRoles.cs`). User 
 
 - Không commit `.env`, mật khẩu, `JWT_SECRET` hay khóa thật. Chỉ commit `.env.example`.
 - Refresh token chỉ lưu hash SHA-256 trong DB; token gốc chỉ trả cho client một lần.
-- Giữ cơ chế xoay vòng refresh token và phát hiện dùng lại token cũ (thu hồi toàn bộ phiên của user).
+- Giữ cơ chế xoay vòng refresh token và phát hiện dùng lại token cũ (thu hồi toàn bộ phiên của user). Chỉ áp dụng cho token đã bị xoay vòng (có `ReplacedByTokenHash`); token bị thu hồi do logout/đổi mật khẩu chỉ bị từ chối, không kéo sập các phiên khác.
 - Các endpoint `forgot-password` và `resend-confirmation` luôn trả cùng một thông báo, không để lộ email có tồn tại hay không.
 - Thông báo đăng nhập sai luôn chung chung ("Email hoặc mật khẩu không đúng"); chỉ báo "chưa xác thực email" sau khi mật khẩu đúng.
 - Các endpoint gửi email phải giữ rate limit `email-send`.

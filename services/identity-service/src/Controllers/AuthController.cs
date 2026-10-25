@@ -237,10 +237,14 @@ public class AuthController : ControllerBase
         if (stored is null)
             return Unauthorized(new { message = "Refresh token không hợp lệ." });
 
-        // Token đã bị thu hồi mà vẫn được dùng lại -> nghi ngờ bị đánh cắp, thu hồi toàn bộ token của user
         if (stored.IsRevoked)
         {
-            await RevokeAllForUserAsync(stored.UserId);
+            // Chỉ token đã bị XOAY VÒNG (đã đổi lấy token mới) mà vẫn được dùng lại mới là dấu hiệu bị đánh cắp
+            // -> thu hồi toàn bộ phiên của user. Token bị thu hồi vì logout / đổi mật khẩu / đặt lại mật khẩu
+            // thì chỉ cần từ chối, không được kéo sập các phiên hợp lệ khác (vd phiên vừa cấp sau khi đổi mật khẩu).
+            if (stored.ReplacedByTokenHash is not null)
+                await RevokeAllForUserAsync(stored.UserId);
+
             return Unauthorized(new { message = "Refresh token đã bị thu hồi. Vui lòng đăng nhập lại." });
         }
 

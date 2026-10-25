@@ -154,7 +154,9 @@ public class PasswordTests
         await response.ShouldBeAsync(HttpStatusCode.OK);
         var fresh = await response.ReadAsAsync<AuthResponse>();
 
+        // Thiết bị cũ thử refresh bằng token đã bị thu hồi -> bị từ chối...
         await (await _client.RefreshAsync(session.RefreshToken)).ShouldBeAsync(HttpStatusCode.Unauthorized);
+        // ...nhưng phiên mới vừa cấp sau khi đổi mật khẩu KHÔNG được bị kéo sập theo
         await (await _client.RefreshAsync(fresh.RefreshToken)).ShouldBeAsync(HttpStatusCode.OK);
         await (await _client.LoginAsync(user.Email, user.Password)).ShouldBeAsync(HttpStatusCode.Unauthorized);
         await _client.LoginOkAsync(user.Email, NewPassword);
